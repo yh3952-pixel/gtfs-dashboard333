@@ -42,6 +42,37 @@ if need_bootstrap:
         clean=True,
     )
     st.success(msg)
+# ====== DEBUG: verify GTFS layout on Cloud ======
+import os
+from pathlib import Path
+import streamlit as st
+
+def _ls(p: Path):
+    try:
+        return sorted([x.name for x in p.iterdir()])
+    except Exception as e:
+        return [f"<err: {e}>"]
+
+st.sidebar.markdown("### DEBUG (GTFS)")
+st.sidebar.write("CWD:", os.getcwd())
+st.sidebar.write("APP ROOT:", str(Path(__file__).resolve().parent))
+
+gtfs = Path(__file__).resolve().parent / "GTFS"
+st.sidebar.write("GTFS exists:", gtfs.exists(), "path:", str(gtfs))
+st.sidebar.write("GTFS items:", _ls(gtfs)[:50])
+
+# 重点：查最常见的错层级
+st.sidebar.write("GTFS/GTFS exists:", (gtfs / "GTFS").exists())
+if (gtfs / "GTFS").exists():
+    st.sidebar.write("GTFS/GTFS items:", _ls(gtfs / "GTFS")[:50])
+
+# 查 subway 目录里是否真的有 routes.txt
+st.sidebar.write("GTFS/subway exists:", (gtfs / "subway").exists())
+if (gtfs / "subway").exists():
+    st.sidebar.write("GTFS/subway items:", _ls(gtfs / "subway")[:30])
+
+st.sidebar.write("GTFS/LIRR exists:", (gtfs / "LIRR").exists())
+st.sidebar.write("GTFS/MNR exists:", (gtfs / "MNR").exists())
 
 # ====== 其他 import（放在 bootstrap 之后）======
 from datetime import datetime
