@@ -4,10 +4,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
-import requests
-from google.transit import gtfs_realtime_pb2
 from datetime import datetime
 
+import requests
+from google.transit import gtfs_realtime_pb2
 
 # ---------------------------
 # 配置与工具
@@ -16,28 +16,49 @@ ROOT = Path(__file__).resolve().parent
 GTFS_DIR = ROOT / "GTFS"
 
 # 允许用环境变量覆盖本地 key（更安全）
+# 建议你在 Streamlit Cloud 的 Secrets 里配置：
+# MTA_SUBWAY_API_KEY="xxx"
+# MTA_BUS_API_KEY="xxx"
 ENV_SUBWAY_KEY = os.getenv("MTA_SUBWAY_API_KEY")
 ENV_BUS_KEY = os.getenv("MTA_BUS_API_KEY")
 
+# 本地开发可选：放在 GTFS 目录下（Cloud 上通常不存在）
 SUBWAY_KEY_PATH = GTFS_DIR / "subway_API_Key.txt"
 BUS_KEY_PATH = GTFS_DIR / "bus_API_Key.txt"
 
 # 网络请求参数
 TIMEOUT = 12  # 秒
-SUBWAY_HEADERS = {"x-api-key": (ENV_SUBWAY_KEY or SUBWAY_KEY_PATH.read_text(encoding="utf-8").strip())}
-BUS_HEADERS = {}  # OBANYC 的 bus GTFS-rt 用 querystring 带 key，不用 header
 
 def _safe_read_key(path: Path) -> str:
+    """
+    安全读取 key 文件：
+    - 文件不存在/权限问题/编码问题都返回空字符串
+    """
     try:
+        if not path.exists():
+            return ""
         return path.read_text(encoding="utf-8").strip()
     except Exception:
         return ""
 
 def _get_subway_key() -> str:
-    return ENV_SUBWAY_KEY or _safe_read_key(SUBWAY_KEY_PATH)
+    key = (ENV_SUBWAY_KEY or "").strip()
+    if key:
+        return key
+    return _safe_read_key(SUBWAY_KEY_PATH)
 
 def _get_bus_key() -> str:
-    return ENV_BUS_KEY or _safe_read_key(BUS_KEY_PATH)
+    key = (ENV_BUS_KEY or "").strip()
+    if key:
+        return key
+    return _safe_read_key(BUS_KEY_PATH)
+
+def _build_subway_headers() -> Dict[str, str]:
+    """
+    只在调用时构造 headers，避免模块导入阶段读文件导致 Cloud 崩溃
+    """
+    api_key = _get_subway_key()
+    return {"x-api-key": api_key} if api_key else {}
 
 def _ts_to_str(ts: Optional[int]) -> Optional[str]:
     """时间戳 → 字符串；字段缺失返回 None。"""
@@ -63,7 +84,11 @@ def _append_stop_time(rows: List[Dict], route_id: str, stop_update) -> None:
         }
     )
 
-def color_interpolation(dark_color: Tuple[int, int, int], light_color: Tuple[int, int, int], n: float) -> Tuple[int, int, int, float]:
+def color_interpolation(
+    dark_color: Tuple[int, int, int],
+    light_color: Tuple[int, int, int],
+    n: float
+) -> Tuple[int, int, int, float]:
     """
     颜色插值，返回 (r,g,b,a)；n∈[0,1]
     """
@@ -82,8 +107,7 @@ def get_subway_schedule() -> List[Dict]:
     汇总所有 NYCT 子 feed 的 trip_update → list[dict]
     dict keys: route, arrival_time, departure_time, stop_id
     """
-    api_key = _get_subway_key()
-    headers = {"x-api-key": api_key} if api_key else {}
+    headers = _build_subway_headers()
 
     urls = [
         "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
@@ -105,7 +129,6 @@ def get_subway_schedule() -> List[Dict]:
             fm.ParseFromString(resp.content)
             feed.entity.extend(fm.entity)
         except Exception:
-            # 单个子 feed 出错不影响其他
             continue
 
     rows: List[Dict] = []
@@ -123,8 +146,7 @@ def get_subway_schedule() -> List[Dict]:
 # Metro-North Railroad（MNR）
 # ---------------------------
 def get_MNR_schedule() -> List[Dict]:
-    api_key = _get_subway_key()
-    headers = {"x-api-key": api_key} if api_key else {}
+    headers = _build_subway_headers()
     url = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/mnr%2Fgtfs-mnr"
 
     feed = gtfs_realtime_pb2.FeedMessage()
@@ -151,8 +173,7 @@ def get_MNR_schedule() -> List[Dict]:
 # Long Island Rail Road（LIRR）
 # ---------------------------
 def get_LIRR_schedule() -> List[Dict]:
-    api_key = _get_subway_key()
-    headers = {"x-api-key": api_key} if api_key else {}
+    headers = _build_subway_headers()
     url = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/lirr%2Fgtfs-lirr"
 
     feed = gtfs_realtime_pb2.FeedMessage()
