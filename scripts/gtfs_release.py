@@ -16,9 +16,6 @@ def _download_file(
     timeout: int = 180,
     chunk_size: int = 1024 * 1024,
 ) -> None:
-    """
-    Download a file from GitHub Release asset (supports private repo via token).
-    """
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     headers = {
@@ -36,41 +33,53 @@ def _download_file(
                     f.write(chunk)
 
 
-def _find_zip_root_with_signals(z: zipfile.ZipFile) -> Path:
+def _zip_top_level_dirs(z: zipfile.ZipFile) -> set[str]:
     """
-    在 zip 内定位“GTFS 根目录”：
-    - 以 routes.txt 或 subway/routes.txt 等信号文件为锚
-    - 返回该锚所在的父目录（即根目录）
+    返回 zip 顶层目录集合（例如 {'GTFS'} 或 {'subway','LIRR',...}）
     """
-    names = [n for n in z.namelist() if not n.endswith("/")]
-    # 优先 routes.txt
-    for n in names:
-        if n.endswith("routes.txt"):
-            return Path(n).parent
-    # 其次 stops.txt
-    for n in names:
-        if n.endswith("stops.txt"):
-            return Path(n).parent
-    # 找不到就认为 zip 顶层
-    return Path("")
+    tops = set()
+    for name in z.namelist():
+        if not name or name.startswith("__MACOSX/"):
+            continue
+        parts = name.split("/")
+        if parts and parts[0]:
+            tops.add(parts[0])
+    return tops
 
 
-def _unzip_flatten(zip_path: Path, out_dir: Path, clean: bool = True) -> None:
+def _looks_like_multi_feed_root(p: Path) -> bool:
     """
-    解压并“扁平化”：
-    - 如果 zip 内部带顶层 GTFS/，会把 GTFS/ 下的内容搬到 out_dir
-    - 最终 out_dir 下应直接出现 subway/LIRR/MNR/bus_* 或 routes.txt 等
+    判定目录 p 是否像你的“多子目录 GTFS 根”：
+    - 存在 subway/ 或 LIRR/ 或 MNR/
+    - 或存在任意 bus_*/routes.txt
+    """
+    if (p / "subway").is_dir() or (p / "LIRR").is_dir() or (p / "MNR").is_dir():
+        return True
+    for d in p.glob("bus_*"):
+        if d.is_dir() and (d / "routes.txt").exists():
+            return True
+    return False
+
+
+def _clean_dir(p: Path) -> None:
+    if not p.exists():
+        return
+    for item in p.iterdir():
+        if item.is_dir():
+            shutil.rmtree(item)
+        else:
+            item.unlink()
+
+
+def _unzip_preserve_structure(zip_path: Path, out_dir: Path, clean: bool = True) -> None:
+    """
+    只去掉 zip 最外层“单一容器目录”（常见为 GTFS/），但保留 subway/LIRR/MNR/bus_* 结构。
+    - 如果 zip 顶层就是 subway/LIRR/bus_*，则直接解压到 out_dir
+    - 如果 zip 顶层只有一个目录（如 GTFS/），则解压到 out_dir 并去掉该外层目录
     """
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    # 清理旧数据（避免混杂）
-    if clean and out_dir.exists():
-        for item in out_dir.iterdir():
-            # 保留 marker 由上层控制，这里全清
-            if item.is_dir():
-                shutil.rmtree(item)
-            else:
-                item.unlink()
+    if clean:
+        _clean_dir(out_dir)
 
     tmp = out_dir / "__tmp_unzip__"
     if tmp.exists():
@@ -79,42 +88,30 @@ def _unzip_flatten(zip_path: Path, out_dir: Path, clean: bool = True) -> None:
 
     with zipfile.ZipFile(zip_path, "r") as z:
         z.extractall(tmp)
+        tops = _zip_top_level_dirs(z)
 
-        zip_root = _find_zip_root_with_signals(z)  # e.g. "GTFS/subway" -> parent "GTFS"
-        src_root = (tmp / zip_root).resolve()
+    # 情况 A：zip 顶层就是多个 feed 目录（subway/LIRR/bus_*）
+    # 直接把 tmp 下的内容搬到 out_dir
+    if len(tops) != 1:
+        for item in tmp.iterdir():
+            shutil.move(str(item), str(out_dir / item.name))
+        shutil.rmtree(tmp)
+        return
 
-        # 如果定位到的是 subway 这一层（例如 .../GTFS/subway），再往上一层到包含多个子目录的根
-        # 我们希望根目录下包含 subway/LIRR/MNR/bus_* 或 routes.txt
-        # 若 src_root 本身就是 subway 目录，则取它的父目录
-        if src_root.name.lower() == "subway":
-            src_root = src_root.parent
+    # 情况 B：zip 顶层只有一个容器目录（例如 GTFS/）
+    container = tmp / next(iter(tops))
+    if not container.exists() or not container.is_dir():
+        # 理论上不会发生，兜底
+        for item in tmp.iterdir():
+            shutil.move(str(item), str(out_dir / item.name))
+        shutil.rmtree(tmp)
+        return
 
-        # 扁平化：把 src_root 下内容全部搬到 out_dir
-        for item in src_root.iterdir():
-            dest = out_dir / item.name
-            if dest.exists():
-                if dest.is_dir():
-                    shutil.rmtree(dest)
-                else:
-                    dest.unlink()
-            shutil.move(str(item), str(dest))
+    # 把 container 里面的内容搬到 out_dir（保留子目录结构）
+    for item in container.iterdir():
+        shutil.move(str(item), str(out_dir / item.name))
 
     shutil.rmtree(tmp)
-
-
-def _looks_like_gtfs_root(p: Path) -> bool:
-    """
-    判断 out_dir 是否像 GTFS 根目录：
-    - 有 subway/LIRR/MNR 任一子目录
-    - 或直接包含 routes.txt / stops.txt（某些数据包不分子目录）
-    """
-    if (p / "subway").exists():
-        return True
-    if (p / "LIRR").exists() or (p / "MNR").exists():
-        return True
-    if (p / "routes.txt").exists() and (p / "stops.txt").exists():
-        return True
-    return False
 
 
 def ensure_gtfs_from_github_release(
@@ -126,14 +123,6 @@ def ensure_gtfs_from_github_release(
     force_redownload: bool = False,
     clean: bool = True,
 ) -> str:
-    """
-    Ensure GTFS data exists by downloading a GitHub Release asset zip and extracting it.
-
-    Improvements vs old version:
-    - unzip with flatten to avoid GTFS/GTFS nesting
-    - optional clean to avoid mixing old/new files
-    - validate structure before writing marker
-    """
     gtfs_path = Path(gtfs_dir)
     marker_path = Path(marker_file)
     zip_path = Path(cache_zip_path)
@@ -141,7 +130,6 @@ def ensure_gtfs_from_github_release(
     if marker_path.exists() and not force_redownload:
         return f"GTFS already ready (marker found at {marker_path})."
 
-    # Clean marker if force
     if force_redownload and marker_path.exists():
         try:
             marker_path.unlink()
@@ -149,17 +137,16 @@ def ensure_gtfs_from_github_release(
             pass
 
     _download_file(asset_url, zip_path, token=token)
-    _unzip_flatten(zip_path, gtfs_path, clean=clean)
+    _unzip_preserve_structure(zip_path, gtfs_path, clean=clean)
 
-    # Validate before marking ready
-    if not _looks_like_gtfs_root(gtfs_path):
-        # 不要写 marker，让上层能重试/报错
+    # 校验结构：必须是多-feed结构
+    if not _looks_like_multi_feed_root(gtfs_path):
         raise RuntimeError(
-            f"GTFS extracted but layout invalid under '{gtfs_path}'. "
-            f"Expected 'subway/' or 'routes.txt'. Please check your zip structure."
+            f"GTFS extracted but structure is not multi-feed under '{gtfs_path}'. "
+            f"Expected folders like subway/LIRR/MNR/bus_*."
         )
 
     marker_path.parent.mkdir(parents=True, exist_ok=True)
     marker_path.write_text("ok", encoding="utf-8")
 
-    return f"Downloaded, flattened, and extracted GTFS to '{gtfs_path}'."
+    return f"Downloaded and extracted GTFS to '{gtfs_path}'."
