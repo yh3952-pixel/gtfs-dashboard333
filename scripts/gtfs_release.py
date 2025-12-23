@@ -1,6 +1,6 @@
-# scripts/gtfs_release.py
 from __future__ import annotations
 
+import os
 import shutil
 import zipfile
 from pathlib import Path
@@ -33,85 +33,53 @@ def _download_file(
                     f.write(chunk)
 
 
-def _zip_top_level_dirs(z: zipfile.ZipFile) -> set[str]:
+def _safe_join(base: Path, rel: Path) -> Path:
+    """Prevent zip-slip."""
+    dest = (base / rel).resolve()
+    base_resolved = base.resolve()
+    if not str(dest).startswith(str(base_resolved)):
+        raise RuntimeError(f"Unsafe path in zip: {rel}")
+    return dest
+
+
+def _unzip_strip_top_folder(zip_path: Path, out_dir: Path) -> None:
     """
-    返回 zip 顶层目录集合（例如 {'GTFS'} 或 {'subway','LIRR',...}）
-    """
-    tops = set()
-    for name in z.namelist():
-        if not name or name.startswith("__MACOSX/"):
-            continue
-        parts = name.split("/")
-        if parts and parts[0]:
-            tops.add(parts[0])
-    return tops
-
-
-def _looks_like_multi_feed_root(p: Path) -> bool:
-    """
-    判定目录 p 是否像你的“多子目录 GTFS 根”：
-    - 存在 subway/ 或 LIRR/ 或 MNR/
-    - 或存在任意 bus_*/routes.txt
-    """
-    if (p / "subway").is_dir() or (p / "LIRR").is_dir() or (p / "MNR").is_dir():
-        return True
-    for d in p.glob("bus_*"):
-        if d.is_dir() and (d / "routes.txt").exists():
-            return True
-    return False
-
-
-def _clean_dir(p: Path) -> None:
-    if not p.exists():
-        return
-    for item in p.iterdir():
-        if item.is_dir():
-            shutil.rmtree(item)
-        else:
-            item.unlink()
-
-
-def _unzip_preserve_structure(zip_path: Path, out_dir: Path, clean: bool = True) -> None:
-    """
-    只去掉 zip 最外层“单一容器目录”（常见为 GTFS/），但保留 subway/LIRR/MNR/bus_* 结构。
-    - 如果 zip 顶层就是 subway/LIRR/bus_*，则直接解压到 out_dir
-    - 如果 zip 顶层只有一个目录（如 GTFS/），则解压到 out_dir 并去掉该外层目录
+    Extract zip into out_dir, but if all files share a single top-level folder
+    (e.g. 'GTFS/...'), strip that folder so we don't end up with out_dir/GTFS/...
     """
     out_dir.mkdir(parents=True, exist_ok=True)
-    if clean:
-        _clean_dir(out_dir)
-
-    tmp = out_dir / "__tmp_unzip__"
-    if tmp.exists():
-        shutil.rmtree(tmp)
-    tmp.mkdir(parents=True, exist_ok=True)
 
     with zipfile.ZipFile(zip_path, "r") as z:
-        z.extractall(tmp)
-        tops = _zip_top_level_dirs(z)
+        names = [n for n in z.namelist() if n and not n.endswith("/")]
+        if not names:
+            return
 
-    # 情况 A：zip 顶层就是多个 feed 目录（subway/LIRR/bus_*）
-    # 直接把 tmp 下的内容搬到 out_dir
-    if len(tops) != 1:
-        for item in tmp.iterdir():
-            shutil.move(str(item), str(out_dir / item.name))
-        shutil.rmtree(tmp)
-        return
+        # compute top-level folder if uniform
+        first_parts = {Path(n).parts[0] for n in names if Path(n).parts}
+        strip_one = len(first_parts) == 1
+        top = next(iter(first_parts)) if strip_one else None
 
-    # 情况 B：zip 顶层只有一个容器目录（例如 GTFS/）
-    container = tmp / next(iter(tops))
-    if not container.exists() or not container.is_dir():
-        # 理论上不会发生，兜底
-        for item in tmp.iterdir():
-            shutil.move(str(item), str(out_dir / item.name))
-        shutil.rmtree(tmp)
-        return
+        for member in z.infolist():
+            name = member.filename
+            if not name or name.endswith("/"):
+                continue
 
-    # 把 container 里面的内容搬到 out_dir（保留子目录结构）
-    for item in container.iterdir():
-        shutil.move(str(item), str(out_dir / item.name))
+            p = Path(name)
 
-    shutil.rmtree(tmp)
+            # strip the single top folder (commonly "GTFS")
+            if strip_one and top and p.parts and p.parts[0] == top:
+                rel = Path(*p.parts[1:])
+            else:
+                rel = p
+
+            if not rel.parts:
+                continue
+
+            dest = _safe_join(out_dir, rel)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+
+            with z.open(member) as src, open(dest, "wb") as dst:
+                shutil.copyfileobj(src, dst)
 
 
 def ensure_gtfs_from_github_release(
@@ -130,21 +98,17 @@ def ensure_gtfs_from_github_release(
     if marker_path.exists() and not force_redownload:
         return f"GTFS already ready (marker found at {marker_path})."
 
-    if force_redownload and marker_path.exists():
+    # clean old contents to avoid mixing wrong layouts
+    if clean and gtfs_path.exists():
+        shutil.rmtree(gtfs_path, ignore_errors=True)
+    if marker_path.exists():
         try:
             marker_path.unlink()
         except Exception:
             pass
 
     _download_file(asset_url, zip_path, token=token)
-    _unzip_preserve_structure(zip_path, gtfs_path, clean=clean)
-
-    # 校验结构：必须是多-feed结构
-    if not _looks_like_multi_feed_root(gtfs_path):
-        raise RuntimeError(
-            f"GTFS extracted but structure is not multi-feed under '{gtfs_path}'. "
-            f"Expected folders like subway/LIRR/MNR/bus_*."
-        )
+    _unzip_strip_top_folder(zip_path, gtfs_path)
 
     marker_path.parent.mkdir(parents=True, exist_ok=True)
     marker_path.write_text("ok", encoding="utf-8")
