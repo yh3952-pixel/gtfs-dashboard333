@@ -1,85 +1,56 @@
-# app_streamlit.py —— 长期可升级版（MapLibre/Scattermap + Streamlit width='stretch' + 实时过滤稳健 + 30s 刷新 + 全屏优化 + 时区稳健）
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import streamlit as st
+
+# ====== GTFS bootstrap（Cloud 自动下载解压；本地已有则跳过）======
+from scripts.gtfs_release import ensure_gtfs_from_github_release
+
+GTFS_ASSET_URL = "https://github.com/yh3952-pixel/gtfs-dashboard333/releases/download/GTFS/GTFS.zip"
+ROOT = Path(__file__).resolve().parent
+GTFS_DIR = ROOT / "GTFS"
+
+def gtfs_layout_ok(p: Path) -> bool:
+    return (
+        (p / "subway").is_dir()
+        or (p / "LIRR").is_dir()
+        or (p / "MNR").is_dir()
+        or any(d.is_dir() for d in p.glob("bus_*"))
+    )
+
+# Streamlit Cloud: token 放 Secrets；本地也可以用环境变量
+github_token = None
+try:
+    github_token = st.secrets.get("GITHUB_TOKEN", None)
+except Exception:
+    github_token = None
+github_token = github_token or os.getenv("GITHUB_TOKEN")
+
+marker = GTFS_DIR / ".ready"
+need_bootstrap = (not marker.exists()) or (not gtfs_layout_ok(GTFS_DIR))
+
+if need_bootstrap:
+    st.info("GTFS not ready. Downloading/extracting from GitHub Release...")
+    msg = ensure_gtfs_from_github_release(
+        asset_url=GTFS_ASSET_URL,
+        gtfs_dir=str(GTFS_DIR),
+        marker_file=str(marker),
+        cache_zip_path="cache/GTFS.zip",
+        token=github_token,
+        force_redownload=True,
+        clean=True,
+    )
+    st.success(msg)
+
+# ====== 其他 import（放在 bootstrap 之后）======
 from datetime import datetime
 import json
 import urllib.request as urlreq
 import inspect
-import os
-import shutil
 
 import pandas as pd
 import plotly.graph_objects as go
-import streamlit as st
-
-from scripts.gtfs_release import ensure_gtfs_from_github_release
-
-GTFS_ASSET_URL = "https://github.com/yh3952-pixel/gtfs-dashboard333/releases/download/GTFS/GTFS.zip"
-
-# =========================
-#   GTFS 解压结构修复
-# =========================
-def _flatten_gtfs_if_nested(gtfs_dir: Path) -> None:
-    """
-    如果出现 GTFS/GTFS/... 结构，则自动扁平化成 GTFS/...
-    例如：
-      GTFS/GTFS/subway/routes.txt  ->  GTFS/subway/routes.txt
-    """
-    nested = gtfs_dir / "GTFS"
-    if nested.exists() and nested.is_dir():
-        looks_like_gtfs = any((nested / x).exists() for x in ["subway", "LIRR", "MNR"]) or (nested / "routes.txt").exists()
-        if looks_like_gtfs:
-            for item in nested.iterdir():
-                dest = gtfs_dir / item.name
-                if dest.exists():
-                    if dest.is_dir():
-                        shutil.rmtree(dest)
-                    else:
-                        dest.unlink()
-                shutil.move(str(item), str(dest))
-            shutil.rmtree(nested)
-
-def _ensure_gtfs_layout(gtfs_dir: Path) -> Path:
-    """
-    确保 gtfs_dir 是最终 GTFS 根目录（扁平化后返回 gtfs_dir）
-    """
-    gtfs_dir.mkdir(parents=True, exist_ok=True)
-    _flatten_gtfs_if_nested(gtfs_dir)
-    return gtfs_dir
-
-
-# =========================
-#   下载/解压 GTFS（Cloud 兼容）
-# =========================
-# 从 Streamlit Secrets 读取 GitHub token（private repo 必需）
-# 你需要在 Streamlit Cloud 的 App Settings -> Secrets 里配置：
-# GITHUB_TOKEN="xxxx"
-github_token = st.secrets.get("GITHUB_TOKEN", None)
-
-GTFS_LOCAL_DIR = Path("GTFS")
-MARKER_FILE = GTFS_LOCAL_DIR / ".ready"
-
-if not MARKER_FILE.exists():
-    st.info("GTFS data not found. Downloading from GitHub Release (private repo requires token)...")
-    try:
-        msg = ensure_gtfs_from_github_release(
-            asset_url=GTFS_ASSET_URL,
-            gtfs_dir=str(GTFS_LOCAL_DIR),
-            marker_file=str(MARKER_FILE),
-            cache_zip_path="cache/GTFS.zip",
-            token=github_token,
-        )
-        # 关键：解压后立刻修复可能的 GTFS/GTFS 嵌套
-        _ensure_gtfs_layout(GTFS_LOCAL_DIR)
-        st.success(msg)
-    except Exception as e:
-        st.error(f"Failed to download/extract GTFS data: {e}")
-        st.stop()
-else:
-    # 即使 ready 存在，也做一次扁平化（防止你之前解压出了 GTFS/GTFS）
-    _ensure_gtfs_layout(GTFS_LOCAL_DIR)
-
 
 # ====== 实时工具（你的 Streamlit 版 utils）======
 from utils_streamlit import (
@@ -89,6 +60,7 @@ from utils_streamlit import (
     get_MNR_schedule,
     color_interpolation,
 )
+
 
 # ---- 页面配置尽早设置 ----
 st.set_page_config(page_title="Real Time Transportation Dashboard", layout="wide")
@@ -134,19 +106,16 @@ def st_plotly(fig: go.Figure, config: dict | None = None):
     config = config or {"displaylogo": False}
     sig = inspect.signature(st.plotly_chart)
     if "width" in sig.parameters:
+        # 新版 API
         st.plotly_chart(fig, config=config, width="stretch")
     else:
+        # 旧版 API
         st.plotly_chart(fig, config=config, use_container_width=True)
 
 
 # ====== 路径 & 常量 ======
 ROOT = Path(__file__).resolve().parent
-GTFS_DIR = _ensure_gtfs_layout(ROOT / "GTFS")
-
-# ---- 硬校验：避免空页面“悄悄失败” ----
-if not (GTFS_DIR / "subway").exists():
-    st.error(f"GTFS structure invalid. Expected {GTFS_DIR/'subway'} to exist. Current GTFS_DIR: {GTFS_DIR}")
-    st.stop()
+GTFS_DIR = ROOT / "GTFS"
 
 SUBFILES = [
     "bus_bronx",
@@ -322,8 +291,9 @@ def get_bus_route_ids(borough: str) -> list[str]:
 def filter_feed_df(df: pd.DataFrame) -> pd.DataFrame:
     """
     稳健过滤：仅保留“现在之后”的最近一班。
+    关键点：
     - tz-aware：统一转 America/New_York
-    - tz-naive：默认认为已经是本地时间（避免错误当 UTC 导致偏 5 小时）
+    - tz-naive：默认认为已经是本地时间（不要强行当 UTC 再转换，否则会偏 5 小时导致全被过滤）
     """
     if df is None or df.empty:
         return pd.DataFrame(columns=["route", "stop_id", "arrival_time", "departure_time"])
@@ -335,9 +305,11 @@ def filter_feed_df(df: pd.DataFrame) -> pd.DataFrame:
     for col in ["arrival_time", "departure_time"]:
         df[col] = pd.to_datetime(df[col], errors="coerce")
 
+        # tz-aware：转 NY
         if hasattr(df[col].dt, "tz") and df[col].dt.tz is not None:
             df[col] = df[col].dt.tz_convert("America/New_York").dt.tz_localize(None)
         else:
+            # tz-naive：假设已经是纽约本地 naive，不再做 tz_localize("UTC") 这种危险操作
             pass
 
     now = pd.Timestamp.now(tz="America/New_York").tz_localize(None)
@@ -504,6 +476,11 @@ def _add_lines_to_fig(
     route_label: str | None = None,
     valid_stops_set: set[str] | None = None,
 ):
+    """
+    valid_stops_set:
+      - None：不做过滤（显示完整静态线）
+      - set(...)：只显示该集合内站点（实时过滤）
+    """
     if not subs:
         return
 
@@ -516,6 +493,7 @@ def _add_lines_to_fig(
         if valid_stops_set is not None:
             plot_df = plot_df[plot_df["stop_id"].astype(str).isin(valid_stops_set)]
 
+        # 注意：画线至少要 2 个点，否则跳过
         if len(plot_df) < 2:
             continue
 
@@ -550,7 +528,7 @@ def _add_lines_to_fig(
 
 
 # =========================
-#   各图层构图
+#   各图层构图（关键：实时过滤只在“该线路存在实时数据时”启用）
 # =========================
 def build_subway_figure(selected_routes: list[str], show_arrival: bool, show_stops: bool) -> go.Figure:
     fig = _base_fig(center=(40.78, -73.97), zoom=10)
@@ -586,9 +564,13 @@ def build_subway_figure(selected_routes: list[str], show_arrival: bool, show_sto
             else _default_hover
         )
 
+        # 关键修复：只有当该线路在实时 feed 中出现过，才开启过滤
         current_valid_stops = None
-        if show_arrival and rid_str in valid_stops_by_route:
-            current_valid_stops = valid_stops_by_route[rid_str]
+        if show_arrival:
+            if rid_str in valid_stops_by_route:
+                current_valid_stops = valid_stops_by_route[rid_str]
+            else:
+                current_valid_stops = None  # 不过滤，防止整图无 trace
 
         _add_lines_to_fig(
             fig,
@@ -639,8 +621,11 @@ def build_bus_borough_figure(borough: str, selected_routes: list[str], show_arri
         )
 
         current_valid_stops = None
-        if show_arrival and rid_str in valid_stops_by_route:
-            current_valid_stops = valid_stops_by_route[rid_str]
+        if show_arrival:
+            if rid_str in valid_stops_by_route:
+                current_valid_stops = valid_stops_by_route[rid_str]
+            else:
+                current_valid_stops = None
 
         _add_lines_to_fig(
             fig,
@@ -690,8 +675,11 @@ def build_lirr_figure(selected_routes: list[str], show_arrival: bool, show_stops
         )
 
         current_valid_stops = None
-        if show_arrival and rid_str in valid_stops_by_route:
-            current_valid_stops = valid_stops_by_route[rid_str]
+        if show_arrival:
+            if rid_str in valid_stops_by_route:
+                current_valid_stops = valid_stops_by_route[rid_str]
+            else:
+                current_valid_stops = None
 
         _add_lines_to_fig(
             fig,
