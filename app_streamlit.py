@@ -1,111 +1,7 @@
+# app_streamlit.py —— 长期可升级版（MapLibre/Scattermap + Streamlit width='stretch' + 实时过滤稳健 + 30s 刷新 + 全屏优化 + 时区稳健）
 from __future__ import annotations
 
 from pathlib import Path
-import os
-import streamlit as st
-
-# ====== GTFS bootstrap（Cloud 自动下载解压；本地已有则跳过）======
-from scripts.gtfs_release import ensure_gtfs_from_github_release
-
-GTFS_ASSET_URL = "https://github.com/yh3952-pixel/gtfs-dashboard333/releases/download/GTFS/GTFS.zip"
-ROOT = Path(__file__).resolve().parent
-GTFS_DIR = ROOT / "GTFS"
-
-def gtfs_layout_ok(p: Path) -> bool:
-    return (
-        (p / "subway").is_dir()
-        or (p / "LIRR").is_dir()
-        or (p / "MNR").is_dir()
-        or any(d.is_dir() for d in p.glob("bus_*"))
-    )
-
-# Streamlit Cloud: token 放 Secrets；本地也可以用环境变量
-github_token = None
-try:
-    github_token = st.secrets.get("GITHUB_TOKEN", None)
-except Exception:
-    github_token = None
-github_token = github_token or os.getenv("GITHUB_TOKEN")
-
-marker = GTFS_DIR / ".ready"
-need_bootstrap = (not marker.exists()) or (not gtfs_layout_ok(GTFS_DIR))
-
-if need_bootstrap:
-    st.info("GTFS not ready. Downloading/extracting from GitHub Release...")
-    msg = ensure_gtfs_from_github_release(
-        asset_url=GTFS_ASSET_URL,
-        gtfs_dir=str(GTFS_DIR),
-        marker_file=str(marker),
-        cache_zip_path="cache/GTFS.zip",
-        token=github_token,
-        force_redownload=True,
-        clean=True,
-    )
-    st.success(msg)
-# ====== DEBUG: verify GTFS layout on Cloud ======
-import os
-from pathlib import Path
-import streamlit as st
-
-def _ls(p: Path):
-    try:
-        return sorted([x.name for x in p.iterdir()])
-    except Exception as e:
-        return [f"<err: {e}>"]
-
-st.sidebar.markdown("### DEBUG (GTFS)")
-st.sidebar.write("CWD:", os.getcwd())
-st.sidebar.write("APP ROOT:", str(Path(__file__).resolve().parent))
-
-gtfs = Path(__file__).resolve().parent / "GTFS"
-st.sidebar.write("GTFS exists:", gtfs.exists(), "path:", str(gtfs))
-st.sidebar.write("GTFS items:", _ls(gtfs)[:50])
-
-# 重点：查最常见的错层级
-st.sidebar.write("GTFS/GTFS exists:", (gtfs / "GTFS").exists())
-if (gtfs / "GTFS").exists():
-    st.sidebar.write("GTFS/GTFS items:", _ls(gtfs / "GTFS")[:50])
-
-# 查 subway 目录里是否真的有 routes.txt
-st.sidebar.write("GTFS/subway exists:", (gtfs / "subway").exists())
-if (gtfs / "subway").exists():
-    st.sidebar.write("GTFS/subway items:", _ls(gtfs / "subway")[:30])
-
-st.sidebar.write("GTFS/LIRR exists:", (gtfs / "LIRR").exists())
-st.sidebar.write("GTFS/MNR exists:", (gtfs / "MNR").exists())
-# ===== DEBUG: show GTFS layout on Cloud =====
-import os
-from pathlib import Path
-import streamlit as st
-
-ROOT = Path(__file__).resolve().parent
-gtfs = ROOT / "GTFS"
-
-def ls(p: Path):
-    try:
-        return sorted([x.name for x in p.iterdir()])
-    except Exception as e:
-        return [f"<err: {e}>"]
-
-st.sidebar.markdown("### DEBUG GTFS")
-st.sidebar.write("CWD:", os.getcwd())
-st.sidebar.write("ROOT:", str(ROOT))
-st.sidebar.write("GTFS path:", str(gtfs), "exists:", gtfs.exists())
-st.sidebar.write("GTFS items:", ls(gtfs)[:50])
-
-st.sidebar.write("GTFS/GTFS exists:", (gtfs / "GTFS").exists())
-if (gtfs / "GTFS").exists():
-    st.sidebar.write("GTFS/GTFS items:", ls(gtfs / "GTFS")[:50])
-
-# check one must-have file per feed
-st.sidebar.write("subway dir exists:", (gtfs / "subway").is_dir())
-st.sidebar.write("subway/routes.txt exists:", (gtfs / "subway" / "routes.txt").exists())
-st.sidebar.write("bus_manhattan dir exists:", (gtfs / "bus_manhattan").is_dir())
-st.sidebar.write("bus_manhattan/routes.txt exists:", (gtfs / "bus_manhattan" / "routes.txt").exists())
-st.sidebar.write("LIRR dir exists:", (gtfs / "LIRR").is_dir())
-st.sidebar.write("LIRR/routes.txt exists:", (gtfs / "LIRR" / "routes.txt").exists())
-
-# ====== 其他 import（放在 bootstrap 之后）======
 from datetime import datetime
 import json
 import urllib.request as urlreq
@@ -113,6 +9,7 @@ import inspect
 
 import pandas as pd
 import plotly.graph_objects as go
+import streamlit as st
 
 # ====== 实时工具（你的 Streamlit 版 utils）======
 from utils_streamlit import (
@@ -122,7 +19,6 @@ from utils_streamlit import (
     get_MNR_schedule,
     color_interpolation,
 )
-
 
 # ---- 页面配置尽早设置 ----
 st.set_page_config(page_title="Real Time Transportation Dashboard", layout="wide")
