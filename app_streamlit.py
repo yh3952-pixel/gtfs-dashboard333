@@ -10,6 +10,29 @@ import inspect
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import os
+from scripts.gtfs_release import ensure_gtfs_from_github_release
+
+GTFS_ASSET_URL = "https://github.com/yh3952-pixel/gtfs-dashboard333/releases/download/GTFS/GTFS.zip"
+
+# 从 Streamlit Secrets 读取 GitHub token（private repo 必需）
+# 你需要在 Streamlit Cloud 的 App Settings -> Secrets 里配置 GITHUB_TOKEN
+github_token = st.secrets.get("GITHUB_TOKEN", None)
+
+if not os.path.exists("GTFS/.ready"):
+    st.info("GTFS data not found. Downloading from GitHub Release (private repo requires token)...")
+    try:
+        msg = ensure_gtfs_from_github_release(
+            asset_url=GTFS_ASSET_URL,
+            gtfs_dir="GTFS",
+            marker_file="GTFS/.ready",
+            cache_zip_path="cache/GTFS.zip",
+            token=github_token,
+        )
+        st.success(msg)
+    except Exception as e:
+        st.error(f"Failed to download/extract GTFS data: {e}")
+        st.stop()
 
 # ====== 实时工具（你的 Streamlit 版 utils）======
 from utils_streamlit import (

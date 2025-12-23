@@ -8,3 +8,5 @@ gtfs-realtime-bindings
 streamlit
 protobuf    
 streamlit-autorefresh
+requests
+tqdm
