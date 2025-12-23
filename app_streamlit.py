@@ -73,6 +73,37 @@ if (gtfs / "subway").exists():
 
 st.sidebar.write("GTFS/LIRR exists:", (gtfs / "LIRR").exists())
 st.sidebar.write("GTFS/MNR exists:", (gtfs / "MNR").exists())
+# ===== DEBUG: show GTFS layout on Cloud =====
+import os
+from pathlib import Path
+import streamlit as st
+
+ROOT = Path(__file__).resolve().parent
+gtfs = ROOT / "GTFS"
+
+def ls(p: Path):
+    try:
+        return sorted([x.name for x in p.iterdir()])
+    except Exception as e:
+        return [f"<err: {e}>"]
+
+st.sidebar.markdown("### DEBUG GTFS")
+st.sidebar.write("CWD:", os.getcwd())
+st.sidebar.write("ROOT:", str(ROOT))
+st.sidebar.write("GTFS path:", str(gtfs), "exists:", gtfs.exists())
+st.sidebar.write("GTFS items:", ls(gtfs)[:50])
+
+st.sidebar.write("GTFS/GTFS exists:", (gtfs / "GTFS").exists())
+if (gtfs / "GTFS").exists():
+    st.sidebar.write("GTFS/GTFS items:", ls(gtfs / "GTFS")[:50])
+
+# check one must-have file per feed
+st.sidebar.write("subway dir exists:", (gtfs / "subway").is_dir())
+st.sidebar.write("subway/routes.txt exists:", (gtfs / "subway" / "routes.txt").exists())
+st.sidebar.write("bus_manhattan dir exists:", (gtfs / "bus_manhattan").is_dir())
+st.sidebar.write("bus_manhattan/routes.txt exists:", (gtfs / "bus_manhattan" / "routes.txt").exists())
+st.sidebar.write("LIRR dir exists:", (gtfs / "LIRR").is_dir())
+st.sidebar.write("LIRR/routes.txt exists:", (gtfs / "LIRR" / "routes.txt").exists())
 
 # ====== 其他 import（放在 bootstrap 之后）======
 from datetime import datetime
